@@ -48,7 +48,7 @@ rmdir mnt
 使用以下命令启动虚拟机
 
 ```bash
-qemu-system-x86_64 \                                # 64 位虚拟机
+qemu-system-x86_64 \                                    # 64 位虚拟机
 	-kernel bzImage \                               # 使用编译好的内核
 	-hda disk.img \                                 # 使用创建好的虚拟磁盘
 	-append "root=/dev/sda console=ttyS0 nokaslr" \ # 内核参数
@@ -86,16 +86,37 @@ gdb \
 
 GDB 调试的起点是 `start_kernel()` 函数，因此该部分是直接通过读源码注释获知的，只保留了一部分主要步骤。
 
-实际上我的电脑安装了 GRUB 引导器，因此启动时将直接转到 `/arch/x86/kernel/head_64.S`；在虚拟机中内核通过 `/arch/x86/boot/compressed/head_64.S` 引导并转向上一个文件。这部分的主要工作是从 32 位工作模式切换到 64 位模式，并加载了 identity mapped page tables （内核页映射）。
+实际上我的电脑安装了 GRUB 引导器，因此启动时将直接转到 `/arch/x86/kernel/head.S` 的 `_start`；qemu 直接加载并跳转到这个入口。
 
 在 `/arch/x86/kernel/head_64.S` 中完成内核启动前的一系列步骤：
 
 1. 第一阶段：验证 CPU （`verify_cpu`），检查内存，修复页表。
-2. 第二阶段：验证 CPU，启用 PAE（Physical Address Extension）和 PSE（Page Size Extension），切换到新的用于 64 位模式的 GDT，初始化段寄存器，跳转到 C 语言代码。
+2. 第二阶段：验证 CPU，启用 PAE（Physical Address Extension）和 PSE（Page Size Extension），切换到新的用于 64 位模式的 GDT，初始化段寄存器，
+
+`start_of_setup` 将设置段寄存器、堆栈和 BSS 段，并跳转到 `main` 函数。
 
 ### 内核启动
 
-总之，经过一系列与机器架构有关的启动步骤，现在到达了 `/init/main.c` 的 `start_kernel()` 函数。这个函数真正地启动了内核。
+在 `/boot/main.c` 的 `main` 函数中
+
+1. 拷贝内核参数
+2. 控制台初始化（实际上是串口）
+3. 堆初始化
+4. 检测 CPU 类型
+5. 内存分布检测
+6. 键盘初始化
+7. 查询 Intel SpeedStep 信息
+8. 设置视频模式
+9. 进入保护模式
+
+`go_to_protected_mode` 为跳转到保护模式做准备（初始化 IDT/GDT 并禁用中断），调用 `protected_mode_jump` 转入 32 位代码 `head_64.S` 准备进入 64 位模式。
+
+在 `/arch/x86/boot/compressed/head_64.S` 中完成内核启动前的一系列步骤：
+
+1. 第一阶段：验证 CPU （`verify_cpu`），检查内存，修复页表。
+2. 第二阶段：验证 CPU，启用 PAE（Physical Address Extension）和 PSE（Page Size Extension），切换到新的用于 64 位模式的 GDT，初始化段寄存器，
+
+此后将内核解压缩并跳转到 `start_kernel`，终于进入了内核。
 
 1. 内核在每个 CPU 上创建了 idle 进程（PID=0），并在启动时设置 idle 进程的栈顶指针。
 2. 设置处理器 ID
@@ -233,11 +254,8 @@ GDB 调试的起点是 `start_kernel()` 函数，因此该部分是直接通过�
 
 ## 追踪过程总结
 
-启动过程最重要的若干步骤
-
-1. 基本硬件初始化：从系统引导开始，到完成基本硬件初始化，计算机的基本硬件（如硬盘、显示器、键盘等）都将对操作系统可用，且操作系统可以响应来自硬件的中断。
-2. 操作系统功能初始化：此时操作系统的基本功能将可用，已经可以启动进程，响应系统调用。
-3. 启动用户空间：由 `init` 进程完成整个用户空间的启动，将可以响应用户的实际请求。
+1. 进入保护模式（16 位切换到 32 位）
+2. 进入长模式（进入 64 位模式）
 
 ## 其他
 
@@ -251,4 +269,4 @@ GDB 调试的起点是 `start_kernel()` 函数，因此该部分是直接通过�
 
 仅仅一次开机到只输入 `poweroff` 命令关机，一共就创建了进程 1673 次！可见 UNIX 文化是多么喜欢创建进程……
 
-实验中比较意外的是 init 启动之前创建的进程最多，比 init 启动服务和启动过程中创建的临时进程还多，说实话有点意外。但是考虑到 systemd 大幅消除了 shell 脚本的使用，而是直接解析 `.service`。
+实验中比较意外的是 init 启动之前创建的进程最多，比 init 启动服务和启动过程中创建的临时进程还多，说实话有点意外。但是考虑到 systemd 大幅消除了 shell 脚本的使用，而是直接解析 `.service`，想必进程创建不会像 SysVInit 那么多。
